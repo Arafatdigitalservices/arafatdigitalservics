@@ -29,6 +29,7 @@ export interface ProjectItem {
   slug: string;
   title: string;
   category: string;
+  service_id?: string | null;
   client_name: string;
   summary: string;
   challenge: string;
@@ -51,6 +52,7 @@ export interface InquiryItem {
   email: string;
   company: string;
   service_required: string;
+  service_id?: string | null;
   budget_range: string;
   project_details: string;
   status: InquiryStatus;
@@ -66,6 +68,7 @@ export interface BlogPostItem {
   excerpt: string;
   content: string;
   cover_image_url: string;
+  author_id?: string | null;
   author_name: string;
   read_time_minutes: number;
   is_published: boolean;
@@ -104,6 +107,22 @@ export interface SiteSettings {
   updated_at: string;
 }
 
+export type NewsletterStatus = 'active' | 'unsubscribed';
+
+export interface NewsletterSubscriber {
+  id: string;
+  email: string;
+  source: string;
+  status: NewsletterStatus;
+  created_at: string;
+}
+
+export interface SupabaseSchemaStatus {
+  ready: boolean;
+  missingTables: string[];
+  bucketReady: boolean;
+}
+
 export interface MediaAsset {
   name: string;
   url: string;
@@ -128,6 +147,7 @@ export interface DatabaseSnapshot {
   blog_posts: BlogPostItem[];
   testimonials: TestimonialItem[];
   site_settings: SiteSettings;
+  newsletter_subscribers: NewsletterSubscriber[];
   admin_auth?: AdminCredentialRecord | null;
 }
 

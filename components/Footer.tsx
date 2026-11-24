@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Mail, MessageCircle, Phone } from 'lucide-react';
+import { NewsletterForm } from '@/components/NewsletterForm';
 import type { ServiceItem, SiteSettings } from '@/lib/types';
 
 interface FooterProps {
@@ -39,6 +40,7 @@ export function Footer({ settings, services }: FooterProps) {
             <p className="text-xs text-slate-300 leading-relaxed max-w-md">
               Serving organizations across {settings.location_markets}.
             </p>
+            <NewsletterForm source="footer" />
           </div>
 
           <div className="lg:col-span-2 space-y-3">

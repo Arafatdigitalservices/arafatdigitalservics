@@ -21,7 +21,10 @@ export async function POST(req: NextRequest) {
 
     const result = await setupFirstRunAdmin({ email, fullName, password });
     if (!result.ok) {
-      return NextResponse.json({ error: result.error || 'Setup unavailable.' }, { status: 409 });
+      return NextResponse.json(
+        { error: result.error || 'Setup unavailable.' },
+        { status: result.status || 409 }
+      );
     }
 
     return NextResponse.json({

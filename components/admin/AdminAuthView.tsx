@@ -8,6 +8,8 @@ interface AdminAuthViewProps {
   needsSetup: boolean;
   envOverride: boolean;
   defaultEmail?: string;
+  schemaReady?: boolean;
+  authProvider?: 'supabase' | 'local';
   onAuthenticated: (token: string, profile: { email: string; fullName: string }) => void;
 }
 
@@ -15,6 +17,8 @@ export function AdminAuthView({
   needsSetup,
   envOverride,
   defaultEmail = '',
+  schemaReady = true,
+  authProvider = 'supabase',
   onAuthenticated,
 }: AdminAuthViewProps) {
   const [email, setEmail] = useState(defaultEmail);
@@ -99,12 +103,25 @@ export function AdminAuthView({
             </h1>
             <p className="text-sm text-slate-600 leading-relaxed">
               {needsSetup
-                ? 'First-run setup: create your administrator login credentials. Once claimed, this setup route locks automatically.'
+                ? authProvider === 'supabase'
+                  ? 'First-run setup: create your administrator account in Supabase Auth. Once claimed, this setup route locks automatically.'
+                  : 'First-run setup: create your administrator login credentials. Once claimed, this setup route locks automatically.'
                 : envOverride
                   ? 'Sign in with your configured ADMIN_PASSWORD environment secret.'
-                  : 'Sign in with your administrator email and password to manage services, portfolio, blog posts, inquiries, and site settings.'}
+                  : 'Sign in with your administrator email and password to manage services, portfolio, blog posts, inquiries, subscribers, and site settings.'}
             </p>
           </div>
+
+          {authProvider === 'supabase' && !schemaReady ? (
+            <div
+              role="status"
+              className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 leading-relaxed"
+            >
+              Supabase connection is active, but the database tables are not created yet. Run{' '}
+              <code className="font-mono font-semibold">supabase/schema.sql</code> in your Supabase
+              Dashboard SQL Editor before creating or signing into your admin account.
+            </div>
+          ) : null}
 
           {error ? (
             <div

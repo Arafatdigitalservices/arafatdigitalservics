@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdmin } from '@/lib/auth';
+import { requireAdminVerified } from '@/lib/auth';
 import { deleteBlogPost, upsertBlogPost } from '@/lib/data-store';
 import { sanitizeHttpUrl, sanitizeSlug, sanitizeString } from '@/lib/validation';
 
 async function handleUpsert(req: NextRequest) {
-  const session = requireAdmin(req);
-  if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await requireAdminVerified(req);
+  if (!auth.session) {
+    return NextResponse.json({ error: auth.error || 'Unauthorized' }, { status: auth.status });
   }
+  const session = auth.session;
 
   try {
     const body = (await req.json()) as Record<string, unknown>;
@@ -35,6 +36,7 @@ async function handleUpsert(req: NextRequest) {
       excerpt,
       content,
       cover_image_url: sanitizeHttpUrl(body.cover_image_url),
+      author_id: session.sub || undefined,
       author_name: sanitizeString(body.author_name, 100) || session.fullName || 'Arafat Digital Team',
       read_time_minutes: computedReadTime,
       is_published: body.is_published !== false,
@@ -57,9 +59,9 @@ export async function PUT(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const session = requireAdmin(req);
-  if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await requireAdminVerified(req);
+  if (!auth.session) {
+    return NextResponse.json({ error: auth.error || 'Unauthorized' }, { status: auth.status });
   }
 
   try {

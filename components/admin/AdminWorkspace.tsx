@@ -14,10 +14,12 @@ import {
   Inbox,
   LayoutDashboard,
   LogOut,
+  Mail,
   MessageSquareQuote,
   Pencil,
   Plus,
   Settings,
+  ShieldCheck,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -27,11 +29,15 @@ import type {
   InquiryItem,
   InquiryStatus,
   MediaAsset,
+  NewsletterStatus,
+  NewsletterSubscriber,
   Profile,
   ProjectItem,
   ServiceItem,
   SiteSettings,
+  SupabaseSchemaStatus,
   TestimonialItem,
+  UserRole,
 } from '@/lib/types';
 import { AdminAuthView } from './AdminAuthView';
 
@@ -59,11 +65,13 @@ type AdminTab =
   | 'blog'
   | 'testimonials'
   | 'inquiries'
+  | 'subscribers'
   | 'media'
   | 'settings';
 
 interface OverviewPayload {
   backendMode: 'supabase' | 'local';
+  schemaStatus?: SupabaseSchemaStatus;
   services: ServiceItem[];
   projects: ProjectItem[];
   inquiries: InquiryItem[];
@@ -71,6 +79,7 @@ interface OverviewPayload {
   testimonials: TestimonialItem[];
   site_settings: SiteSettings;
   profiles: Profile[];
+  newsletter_subscribers: NewsletterSubscriber[];
   media: MediaAsset[];
 }
 
@@ -81,6 +90,7 @@ const SIDEBAR_ITEMS: Array<{ id: AdminTab; label: string; icon: typeof LayoutDas
   { id: 'blog', label: 'Blog Posts', icon: FileText },
   { id: 'testimonials', label: 'Testimonials', icon: MessageSquareQuote },
   { id: 'inquiries', label: 'Inquiries', icon: Inbox },
+  { id: 'subscribers', label: 'Subscribers', icon: Mail },
   { id: 'media', label: 'Media Library', icon: ImageIcon },
   { id: 'settings', label: 'Site Settings', icon: Settings },
 ];
@@ -114,10 +124,14 @@ export function AdminWorkspace() {
     needsSetup: boolean;
     envOverride: boolean;
     adminEmail: string;
+    authProvider: 'supabase' | 'local';
+    schemaReady: boolean;
   }>({
     needsSetup: false,
     envOverride: false,
     adminEmail: '',
+    authProvider: 'supabase',
+    schemaReady: true,
   });
 
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
@@ -146,6 +160,21 @@ export function AdminWorkspace() {
   const [settingsForm, setSettingsForm] = useState<SiteSettings | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
 
+  // RBAC user role management state
+  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [newUserForm, setNewUserForm] = useState<{
+    fullName: string;
+    email: string;
+    password: string;
+    role: UserRole;
+  }>({
+    fullName: '',
+    email: '',
+    password: '',
+    role: 'viewer',
+  });
+
   // Delete confirmation dialog state (no window.confirm)
   const [pendingDelete, setPendingDelete] = useState<{
     label: string;
@@ -168,12 +197,16 @@ export function AdminWorkspace() {
           needsSetup?: boolean;
           envOverride?: boolean;
           adminEmail?: string;
+          authProvider?: 'supabase' | 'local';
+          schemaReady?: boolean;
         };
         if (active) {
           setAuthStatus({
             needsSetup: Boolean(json.needsSetup),
             envOverride: Boolean(json.envOverride),
             adminEmail: json.adminEmail || '',
+            authProvider: json.authProvider || 'supabase',
+            schemaReady: json.schemaReady ?? true,
           });
         }
       } catch {
@@ -188,26 +221,33 @@ export function AdminWorkspace() {
     };
   }, []);
 
-  const fetchOverview = useCallback(async (authToken: string) => {
-    setLoadingData(true);
-    try {
-      const res = await fetch('/api/admin/overview', {
-        headers: { Authorization: `Bearer ${authToken}` },
-        cache: 'no-store',
-      });
-      if (res.status === 401) {
-        setToken(null);
-        setAdminProfile(null);
-        return;
+  const fetchOverview = useCallback(
+    async (authToken: string) => {
+      setLoadingData(true);
+      try {
+        const res = await fetch('/api/admin/overview', {
+          headers: { Authorization: `Bearer ${authToken}` },
+          cache: 'no-store',
+        });
+        if (res.status === 401 || res.status === 403) {
+          setToken(null);
+          setAdminProfile(null);
+          setData(null);
+          if (res.status === 403) {
+            showToast('Access denied: Administrator privileges are required.');
+          }
+          return;
+        }
+        if (!res.ok) return;
+        const json = (await res.json()) as OverviewPayload;
+        setData(json);
+        setSettingsForm(json.site_settings);
+      } finally {
+        setLoadingData(false);
       }
-      if (!res.ok) return;
-      const json = (await res.json()) as OverviewPayload;
-      setData(json);
-      setSettingsForm(json.site_settings);
-    } finally {
-      setLoadingData(false);
-    }
-  }, []);
+    },
+    [showToast]
+  );
 
   async function confirmDelete() {
     if (!pendingDelete || !token) return;
@@ -237,13 +277,31 @@ export function AdminWorkspace() {
       },
       body: JSON.stringify({ id, status, admin_notes }),
     });
-    if (res.ok) {
-      showToast('Inquiry updated.');
-      await fetchOverview(token);
-      if (selectedInquiry?.id === id) {
-        const updated = (await res.json()) as InquiryItem;
-        setSelectedInquiry(updated);
+      if (res.ok) {
+        showToast('Inquiry updated.');
+        await fetchOverview(token);
+        if (selectedInquiry?.id === id) {
+          const updated = (await res.json()) as InquiryItem;
+          setSelectedInquiry(updated);
+        }
       }
+    }
+
+  async function handleSubscriberStatus(id: string, status: NewsletterStatus) {
+    if (!token) return;
+    const res = await fetch('/api/admin/newsletter', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ id, status }),
+    });
+    if (res.ok) {
+      showToast('Subscriber updated.');
+      await fetchOverview(token);
+    } else {
+      showToast('Unable to update subscriber.');
     }
   }
 
@@ -307,6 +365,56 @@ export function AdminWorkspace() {
     }
   }
 
+  async function handleRoleChange(userId: string, role: UserRole) {
+    if (!token) return;
+    setUpdatingUserId(userId);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: userId, role }),
+      });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        showToast(json.error || 'Unable to update user role.');
+        return;
+      }
+      showToast(`Role updated to ${role}.`);
+      await fetchOverview(token);
+    } finally {
+      setUpdatingUserId(null);
+    }
+  }
+
+  async function handleCreateUser(e: FormEvent) {
+    e.preventDefault();
+    if (!token) return;
+    setCreatingUser(true);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(newUserForm),
+      });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        showToast(json.error || 'Unable to create user.');
+        return;
+      }
+      showToast('User account created with assigned role.');
+      setNewUserForm({ fullName: '', email: '', password: '', role: 'viewer' });
+      await fetchOverview(token);
+    } finally {
+      setCreatingUser(false);
+    }
+  }
+
   if (authChecking) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-6">
@@ -321,6 +429,8 @@ export function AdminWorkspace() {
         needsSetup={authStatus.needsSetup}
         envOverride={authStatus.envOverride}
         defaultEmail={authStatus.adminEmail}
+        schemaReady={authStatus.schemaReady}
+        authProvider={authStatus.authProvider}
         onAuthenticated={(newToken, profile) => {
           setToken(newToken);
           setAdminProfile(profile);
@@ -444,7 +554,24 @@ export function AdminWorkspace() {
           {/* 1. OVERVIEW */}
           {activeTab === 'overview' && data ? (
             <div className="space-y-8">
-              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+              {data.backendMode === 'supabase' && data.schemaStatus && !data.schemaStatus.ready ? (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 space-y-2">
+                  <p className="text-sm font-semibold text-amber-950">
+                    Supabase SQL Schema Setup Required
+                  </p>
+                  <p className="text-xs text-amber-900 leading-relaxed">
+                    Your Supabase project is connected, but these tables have not been created yet:{' '}
+                    <span className="font-mono font-medium">
+                      {data.schemaStatus.missingTables.join(', ')}
+                    </span>
+                    . Paste <code className="font-mono font-semibold">supabase/schema.sql</code>{' '}
+                    into your Supabase Dashboard SQL Editor and run it once to enable full
+                    PostgreSQL persistence.
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
                 {[
                   { label: 'Services', value: data.services.length, tab: 'services' as AdminTab },
                   { label: 'Projects', value: data.projects.length, tab: 'projects' as AdminTab },
@@ -458,6 +585,11 @@ export function AdminWorkspace() {
                     label: 'Open Inquiries',
                     value: data.inquiries.filter((i) => i.status === 'new').length,
                     tab: 'inquiries' as AdminTab,
+                  },
+                  {
+                    label: 'Subscribers',
+                    value: data.newsletter_subscribers.filter((s) => s.status === 'active').length,
+                    tab: 'subscribers' as AdminTab,
                   },
                 ].map((stat) => (
                   <button
@@ -484,14 +616,14 @@ export function AdminWorkspace() {
                   </p>
                   <p className="text-xs text-slate-500">
                     {data.backendMode === 'supabase'
-                      ? 'All CRUD actions read and write directly to your Supabase tables.'
+                      ? 'All CRUD actions, newsletter signups, and media uploads connect directly to your Supabase backend.'
                       : 'Add NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in environment secrets anytime to switch to Supabase PostgreSQL.'}
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setActiveTab('settings')}
-                  className="px-4 py-2 text-xs font-medium text-[#0F172A] bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl whitespace-nowrap cursor-pointer"
+                  className="min-h-[40px] px-4 py-2 text-xs font-medium text-[#0F172A] bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl whitespace-nowrap cursor-pointer"
                 >
                   Edit Site Settings
                 </button>
@@ -1026,7 +1158,87 @@ export function AdminWorkspace() {
             </div>
           ) : null}
 
-          {/* 7. MEDIA LIBRARY */}
+          {/* 7. NEWSLETTER SUBSCRIBERS */}
+          {activeTab === 'subscribers' && data ? (
+            <div className="space-y-6">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <p className="text-sm text-slate-600">
+                  Manage email subscribers captured from your website newsletter signup form.
+                </p>
+                <span className="text-xs font-medium text-slate-600 tabular-nums">
+                  {data.newsletter_subscribers.filter((s) => s.status === 'active').length} active ·{' '}
+                  {data.newsletter_subscribers.length} total
+                </span>
+              </div>
+
+              {data.newsletter_subscribers.length === 0 ? (
+                <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-2">
+                  <p className="text-base font-semibold text-[#0F172A]">No subscribers yet</p>
+                  <p className="text-sm text-slate-500">
+                    Visitors subscribing via the footer newsletter form will appear here.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[600px] text-left text-sm">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
+                        <tr>
+                          <th className="px-6 py-3 font-medium">Email</th>
+                          <th className="px-6 py-3 font-medium">Source</th>
+                          <th className="px-6 py-3 font-medium">Status</th>
+                          <th className="px-6 py-3 font-medium">Subscribed</th>
+                          <th className="px-6 py-3 font-medium text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {data.newsletter_subscribers.map((sub) => (
+                          <tr key={sub.id} className="hover:bg-slate-50/60">
+                            <td className="px-6 py-4 font-medium text-[#0F172A]">{sub.email}</td>
+                            <td className="px-6 py-4 text-xs text-slate-600">{sub.source}</td>
+                            <td className="px-6 py-4 text-xs font-medium text-[#2563EB]">
+                              {sub.status === 'active' ? 'Active' : 'Unsubscribed'}
+                            </td>
+                            <td className="px-6 py-4 text-xs text-slate-500 tabular-nums">
+                              {formatDateShort(sub.created_at)}
+                            </td>
+                            <td className="px-6 py-4 text-right space-x-3 whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleSubscriberStatus(
+                                    sub.id,
+                                    sub.status === 'active' ? 'unsubscribed' : 'active'
+                                  )
+                                }
+                                className="text-xs font-medium text-[#0F172A] hover:text-[#2563EB] cursor-pointer"
+                              >
+                                {sub.status === 'active' ? 'Unsubscribe' : 'Reactivate'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPendingDelete({
+                                    label: sub.email,
+                                    endpoint: `/api/admin/newsletter?id=${encodeURIComponent(sub.id)}`,
+                                  })
+                                }
+                                className="text-xs font-medium text-red-600 hover:text-red-700 cursor-pointer"
+                              >
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {/* 8. MEDIA LIBRARY */}
           {activeTab === 'media' && data ? (
             <div className="space-y-6">
               <div className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1121,170 +1333,313 @@ export function AdminWorkspace() {
 
           {/* 8. SITE SETTINGS */}
           {activeTab === 'settings' && settingsForm ? (
-            <form
-              onSubmit={handleSaveSettings}
-              className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 space-y-6 max-w-3xl"
-            >
-              <div className="space-y-1">
-                <h2 className="font-display text-xl font-bold text-[#0F172A]">
-                  Global Website Settings
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Changes apply immediately across the Navbar, Hero, Contact page, and Footer.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-8 max-w-3xl">
+              <form
+                onSubmit={handleSaveSettings}
+                className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 space-y-6"
+              >
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-[#0F172A]">Brand Name</label>
-                  <input
-                    type="text"
-                    required
-                    value={settingsForm.brand_name}
-                    onChange={(e) =>
-                      setSettingsForm({ ...settingsForm, brand_name: e.target.value })
-                    }
-                    className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
-                  />
+                  <h2 className="font-display text-xl font-bold text-[#0F172A]">
+                    Global Website Settings
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Changes apply immediately across the Navbar, Hero, Contact page, and Footer.
+                  </p>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-[#0F172A]">Target Markets</label>
-                  <input
-                    type="text"
-                    value={settingsForm.location_markets}
-                    onChange={(e) =>
-                      setSettingsForm({ ...settingsForm, location_markets: e.target.value })
-                    }
-                    className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
-                  />
-                </div>
-              </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-[#0F172A]">
-                    Primary Business Email
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={settingsForm.contact_email}
-                    onChange={(e) =>
-                      setSettingsForm({ ...settingsForm, contact_email: e.target.value })
-                    }
-                    placeholder="arafatdigitalservics@gmail.com"
-                    className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-[#0F172A]">
-                    Secondary Business Email
-                  </label>
-                  <input
-                    type="email"
-                    value={settingsForm.secondary_email}
-                    onChange={(e) =>
-                      setSettingsForm({ ...settingsForm, secondary_email: e.target.value })
-                    }
-                    placeholder="hossinmdarafat693@gmail.com"
-                    className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-[#0F172A]">Tagline / Hero Headline</label>
-                <input
-                  type="text"
-                  required
-                  value={settingsForm.tagline}
-                  onChange={(e) => setSettingsForm({ ...settingsForm, tagline: e.target.value })}
-                  className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-[#0F172A]">Agency Description</label>
-                <textarea
-                  rows={3}
-                  value={settingsForm.description}
-                  onChange={(e) =>
-                    setSettingsForm({ ...settingsForm, description: e.target.value })
-                  }
-                  className="w-full px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-[#0F172A]">
-                    WhatsApp Number (international, e.g. +8801314821008)
-                  </label>
-                  <input
-                    type="text"
-                    value={settingsForm.whatsapp_number}
-                    onChange={(e) =>
-                      setSettingsForm({ ...settingsForm, whatsapp_number: e.target.value })
-                    }
-                    placeholder="+8801314821008"
-                    className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-[#0F172A]">
-                    Phone / Local Number (e.g. 01314821008)
-                  </label>
-                  <input
-                    type="text"
-                    value={settingsForm.phone_number}
-                    onChange={(e) =>
-                      setSettingsForm({ ...settingsForm, phone_number: e.target.value })
-                    }
-                    placeholder="01314821008"
-                    className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-slate-100 space-y-4">
-                <h3 className="text-xs font-semibold text-slate-600">Social Media Links</h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {[
-                    { key: 'linkedin_url', label: 'LinkedIn URL' },
-                    { key: 'twitter_url', label: 'X / Twitter URL' },
-                    { key: 'facebook_url', label: 'Facebook URL' },
-                    { key: 'instagram_url', label: 'Instagram URL' },
-                    { key: 'github_url', label: 'GitHub URL' },
-                  ].map((field) => (
-                    <div key={field.key} className="space-y-1">
-                      <label className="text-xs font-medium text-[#0F172A]">{field.label}</label>
-                      <input
-                        type="url"
-                        value={settingsForm[field.key as keyof SiteSettings] as string}
-                        onChange={(e) =>
-                          setSettingsForm({
-                            ...settingsForm,
-                            [field.key]: e.target.value,
-                          })
-                        }
-                        placeholder="https://"
-                        className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
-                      />
-                    </div>
-                  ))}
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#0F172A]">Brand Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={settingsForm.brand_name}
+                      onChange={(e) =>
+                        setSettingsForm({ ...settingsForm, brand_name: e.target.value })
+                      }
+                      className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#0F172A]">Target Markets</label>
+                    <input
+                      type="text"
+                      value={settingsForm.location_markets}
+                      onChange={(e) =>
+                        setSettingsForm({ ...settingsForm, location_markets: e.target.value })
+                      }
+                      className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                    />
+                  </div>
                 </div>
-              </div>
 
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={savingSettings}
-                  className="min-h-[44px] w-full sm:w-auto px-6 py-2.5 text-sm font-medium text-white bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 rounded-xl cursor-pointer"
-                >
-                  {savingSettings ? 'Saving Settings...' : 'Save Website Settings'}
-                </button>
-              </div>
-            </form>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#0F172A]">
+                      Primary Business Email
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={settingsForm.contact_email}
+                      onChange={(e) =>
+                        setSettingsForm({ ...settingsForm, contact_email: e.target.value })
+                      }
+                      placeholder="arafatdigitalservics@gmail.com"
+                      className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#0F172A]">
+                      Secondary Business Email
+                    </label>
+                    <input
+                      type="email"
+                      value={settingsForm.secondary_email}
+                      onChange={(e) =>
+                        setSettingsForm({ ...settingsForm, secondary_email: e.target.value })
+                      }
+                      placeholder="hossinmdarafat693@gmail.com"
+                      className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-[#0F172A]">Tagline / Hero Headline</label>
+                  <input
+                    type="text"
+                    required
+                    value={settingsForm.tagline}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, tagline: e.target.value })}
+                    className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-[#0F172A]">Agency Description</label>
+                  <textarea
+                    rows={3}
+                    value={settingsForm.description}
+                    onChange={(e) =>
+                      setSettingsForm({ ...settingsForm, description: e.target.value })
+                    }
+                    className="w-full px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#0F172A]">
+                      WhatsApp Number (international, e.g. +8801314821008)
+                    </label>
+                    <input
+                      type="text"
+                      value={settingsForm.whatsapp_number}
+                      onChange={(e) =>
+                        setSettingsForm({ ...settingsForm, whatsapp_number: e.target.value })
+                      }
+                      placeholder="+8801314821008"
+                      className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl font-mono"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-[#0F172A]">
+                      Phone / Local Number (e.g. 01314821008)
+                    </label>
+                    <input
+                      type="text"
+                      value={settingsForm.phone_number}
+                      onChange={(e) =>
+                        setSettingsForm({ ...settingsForm, phone_number: e.target.value })
+                      }
+                      placeholder="01314821008"
+                      className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-slate-100 space-y-4">
+                  <h3 className="text-xs font-semibold text-slate-600">Social Media Links</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {[
+                      { key: 'linkedin_url', label: 'LinkedIn URL' },
+                      { key: 'twitter_url', label: 'X / Twitter URL' },
+                      { key: 'facebook_url', label: 'Facebook URL' },
+                      { key: 'instagram_url', label: 'Instagram URL' },
+                      { key: 'github_url', label: 'GitHub URL' },
+                    ].map((field) => (
+                      <div key={field.key} className="space-y-1">
+                        <label className="text-xs font-medium text-[#0F172A]">{field.label}</label>
+                        <input
+                          type="url"
+                          value={settingsForm[field.key as keyof SiteSettings] as string}
+                          onChange={(e) =>
+                            setSettingsForm({
+                              ...settingsForm,
+                              [field.key]: e.target.value,
+                            })
+                          }
+                          placeholder="https://"
+                          className="w-full min-h-[44px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    type="submit"
+                    disabled={savingSettings}
+                    className="min-h-[44px] w-full sm:w-auto px-6 py-2.5 text-sm font-medium text-white bg-[#2563EB] hover:bg-blue-700 disabled:opacity-60 rounded-xl cursor-pointer"
+                  >
+                    {savingSettings ? 'Saving Settings...' : 'Save Website Settings'}
+                  </button>
+                </div>
+              </form>
+
+              {/* RBAC Access & User Roles Management */}
+              {data ? (
+                <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 space-y-6">
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center shrink-0">
+                      <ShieldCheck className="w-5 h-5" aria-hidden="true" />
+                    </div>
+                    <div className="space-y-1">
+                      <h2 className="font-display text-lg font-bold text-[#0F172A]">
+                        Admin Access & User Roles (RBAC)
+                      </h2>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        Only users explicitly assigned the <span className="font-semibold text-[#0F172A]">admin</span> role
+                        can log in to this Admin Panel. New signups default to <span className="font-semibold text-[#0F172A]">viewer</span> and are blocked from accessing admin routes.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[520px] text-left text-sm">
+                        <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
+                          <tr>
+                            <th className="px-4 py-3 font-medium">User</th>
+                            <th className="px-4 py-3 font-medium">Current Role</th>
+                            <th className="px-4 py-3 font-medium text-right">Assign Role</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {data.profiles.length === 0 ? (
+                            <tr>
+                              <td colSpan={3} className="px-4 py-6 text-center text-xs text-slate-500">
+                                No user profiles found yet.
+                              </td>
+                            </tr>
+                          ) : (
+                            data.profiles.map((prof) => {
+                              const isCurrentAdmin =
+                                prof.email.toLowerCase() === (adminProfile?.email || '').toLowerCase();
+                              return (
+                                <tr key={prof.id}>
+                                  <td className="px-4 py-3">
+                                    <p className="font-medium text-[#0F172A]">
+                                      {prof.full_name || 'Registered User'}
+                                      {isCurrentAdmin ? (
+                                        <span className="ml-2 text-xs font-normal text-[#2563EB]">
+                                          (You)
+                                        </span>
+                                      ) : null}
+                                    </p>
+                                    <p className="text-xs text-slate-500">{prof.email}</p>
+                                  </td>
+                                  <td className="px-4 py-3 text-xs font-medium capitalize text-[#0F172A]">
+                                    {prof.role}
+                                  </td>
+                                  <td className="px-4 py-3 text-right">
+                                    <select
+                                      aria-label={`Role for ${prof.email}`}
+                                      value={prof.role}
+                                      disabled={updatingUserId === prof.id || isCurrentAdmin}
+                                      onChange={(e) =>
+                                        handleRoleChange(prof.id, e.target.value as UserRole)
+                                      }
+                                      className="min-h-[38px] px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg text-[#0F172A] disabled:opacity-60 cursor-pointer"
+                                    >
+                                      <option value="viewer">Viewer (Blocked)</option>
+                                      <option value="editor">Editor (Blocked)</option>
+                                      <option value="admin">Admin (Full Access)</option>
+                                    </select>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <form
+                    onSubmit={handleCreateUser}
+                    className="pt-4 border-t border-slate-100 space-y-4"
+                  >
+                    <h3 className="text-xs font-semibold text-[#0F172A]">
+                      Add User with Explicit Role
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <input
+                        type="text"
+                        required
+                        value={newUserForm.fullName}
+                        onChange={(e) =>
+                          setNewUserForm({ ...newUserForm, fullName: e.target.value })
+                        }
+                        placeholder="Full Name"
+                        className="w-full min-h-[42px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                      />
+                      <input
+                        type="email"
+                        required
+                        value={newUserForm.email}
+                        onChange={(e) =>
+                          setNewUserForm({ ...newUserForm, email: e.target.value })
+                        }
+                        placeholder="user@example.com"
+                        className="w-full min-h-[42px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                      />
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        value={newUserForm.password}
+                        onChange={(e) =>
+                          setNewUserForm({ ...newUserForm, password: e.target.value })
+                        }
+                        placeholder="Temporary password (min 8 chars)"
+                        className="w-full min-h-[42px] px-3.5 py-2 text-base sm:text-sm border border-slate-200 rounded-xl"
+                      />
+                      <select
+                        value={newUserForm.role}
+                        onChange={(e) =>
+                          setNewUserForm({ ...newUserForm, role: e.target.value as UserRole })
+                        }
+                        className="w-full min-h-[42px] px-3.5 py-2 text-base sm:text-sm bg-white border border-slate-200 rounded-xl"
+                      >
+                        <option value="viewer">Viewer (No Admin Access)</option>
+                        <option value="editor">Editor (No Admin Access)</option>
+                        <option value="admin">Admin (Authorized)</option>
+                      </select>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={creatingUser}
+                      className="min-h-[42px] px-5 py-2 text-xs font-medium text-white bg-[#0F172A] hover:bg-slate-800 disabled:opacity-60 rounded-xl cursor-pointer"
+                    >
+                      {creatingUser ? 'Creating User...' : 'Create User Account'}
+                    </button>
+                  </form>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </main>
       </div>

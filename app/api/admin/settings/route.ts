@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdmin } from '@/lib/auth';
+import { requireAdminVerified } from '@/lib/auth';
 import { updateSiteSettings } from '@/lib/data-store';
 import {
   isValidEmail,
@@ -9,9 +9,9 @@ import {
 } from '@/lib/validation';
 
 export async function PUT(req: NextRequest) {
-  const session = requireAdmin(req);
-  if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await requireAdminVerified(req);
+  if (!auth.session) {
+    return NextResponse.json({ error: auth.error || 'Unauthorized' }, { status: auth.status });
   }
 
   try {

@@ -324,5 +324,6 @@ export const DEFAULT_DATABASE_SNAPSHOT: DatabaseSnapshot = {
     },
   ],
   inquiries: [],
+  newsletter_subscribers: [],
   admin_auth: null,
 };

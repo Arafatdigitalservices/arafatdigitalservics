@@ -22,7 +22,10 @@ export async function POST(req: NextRequest) {
 
     const result = await authenticateAdmin({ email, password });
     if (!result.ok) {
-      return NextResponse.json({ error: result.error || 'Invalid credentials.' }, { status: 401 });
+      return NextResponse.json(
+        { error: result.error || 'Invalid credentials.' },
+        { status: result.status || 401 }
+      );
     }
 
     return NextResponse.json({
